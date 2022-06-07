@@ -51,7 +51,7 @@ ROOT_DIR = "/example_filepath/"
 #Set output directory
 OUT_DIR =  "/output/"
 
-# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
+
 LINEAGES = "MYKROBE_LINEAGE.csv.gz"
 
 SAMPLES = "SAMPLES.csv.gz"

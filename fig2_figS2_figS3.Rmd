@@ -55,7 +55,6 @@ ROOT_DIR = "/example_filepath/"
 #Set output directory
 OUT_DIR =  "/output/"
 
-# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
 LINEAGES = "MYKROBE_LINEAGE.csv.gz"
 SAMPLES = "SAMPLES.csv.gz"
 SUBJECTS = "SUBJECTS.csv.gz"
@@ -131,7 +130,7 @@ samples <- samples %>%
 
 
 ``` {r}
-# GPI sample site.14.subj.1068.lab.1068.iso.1 is missing from the lineages table. I am adding this manually and setting MYKROBE_LINEAGE_NAME_1 and MYKROBE_LINEAGE_NAME_2 to "Unknown".
+# Lineage information. One sample info missing, add here.
 
 missing_sample = data.frame(UNIQUEID = "site.14.subj.1068.lab.1068.iso.1", 
                             MYKROBE_LINEAGE_NAME_1 = "Unknown", 

@@ -54,7 +54,7 @@ ROOT_DIR = "/example_filepath/"
 #Set output directory
 OUT_DIR =  "/output/"
 
-# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
+
 LINEAGES = "MYKROBE_LINEAGE.csv.gz"
 
 SAMPLES = "SAMPLES.csv.gz"
@@ -65,7 +65,7 @@ SUBJECTS = "SUBJECTS.csv.gz"
 CRyPTIC_TREE = "cryptic_tree.out"
 
 # Lineages for the QC samples can be found at github.com/kerrimalone/Brankin_Malone_2022
-QC_LINEAGES = "/Users/kmalone/gdrive/projects/linTB/out_comas/lineage_classification.csv"
+QC_LINEAGES = "/Users/kmalone/gdrive/projects/linTB/out_comas/lineage_classification_QC.csv"
 
 GPI_METADATA = "GPI_LOOKUP.csv.gz"
 
