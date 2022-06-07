@@ -1,0 +1,262 @@
+---
+title: "gpi_tree"
+author: "Kerri Malone"
+date: "09/10/2020"
+output: html_document
+---
+
+```{r setup}
+
+libs_load <- function(x){
+  for( i in x ){
+    print(paste0("Checking for library: ", i))
+    if(require( i , character.only = TRUE ) ){
+      print(paste0(i, " already installed. Loading now"))
+    }
+    #  require returns TRUE invisibly if it was able to load package
+    if( ! require( i , character.only = TRUE ) ){
+      print(paste0(i, " not installed. Trying CRAN for install."))
+      #  If package was not able to be loaded then re-install
+      install.packages( i , dependencies = TRUE )
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i," could not be installed from CRAN. Trying Bionconductor....")
+      BiocManager::install(i)
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i, "could not be installed. Check manually")
+    }
+    #  Load package after installing
+  }
+}
+
+#Load libraries
+libs_load(c("ape","corrplot","data.table",
+            "ggrepel","ggtree","RColorBrewer",
+            "scales","tidyverse"))
+
+`%notin%` <- Negate(`%in%`)
+
+```
+
+
+``` {r}
+#Add local path to downloaded data_tables from https://ftp.ebi.ac.uk/pub/databases/cryptic/reproducibility/data_tables/cryptic-analysis-group/
+ROOT_DIR = "/example_filepath/"
+
+#Set output directory
+OUT_DIR =  "/output/"
+
+# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
+LINEAGES = "MYKROBE_LINEAGE.csv.gz"
+
+SAMPLES = "SAMPLES.csv.gz"
+
+SUBJECTS = "SUBJECTS.csv.gz"
+
+# tree can be found at github.com/kerrimalone/Brankin_Malone_2022 
+CRyPTIC_TREE = "cryptic_tree.out"
+
+# Lineages for the QC samples can be found at github.com/kerrimalone/Brankin_Malone_2022
+QC_LINEAGES = "/Users/kmalone/Google Drive/Other computers/My MacBook Pro (1)/gdrive/projects/linTB/out_comas/lineage_classification_QC.csv"
+
+GPI_METADATA = "GPI_LOOKUP.csv.gz"
+
+SITES = "SITES.csv"
+
+COUNTRIES = "COUNTRIES_LOOKUP.csv"
+
+
+```
+
+Read in data.  
+
+```{r}
+gpi_metadata = fread(paste0(ROOT_DIR, GPI_METADATA),
+                     header = TRUE)
+
+sites = fread(paste0(ROOT_DIR, SITES),
+              header = TRUE)
+
+subjects = fread(paste0(ROOT_DIR, SUBJECTS),
+                 header = TRUE)
+
+lineages = fread(paste0(ROOT_DIR, LINEAGES),
+                 header = TRUE)
+
+qc_lineages = fread(QC_LINEAGES,
+                    header=F)
+
+
+samples = fread(paste0(ROOT_DIR, SAMPLES),
+                header = TRUE)
+
+countries = fread(paste0(ROOT_DIR, COUNTRIES),
+                  header = TRUE)
+
+tree <- read.tree(CRyPTIC_TREE)
+
+```
+
+
+
+```{r}
+# Fix tree labels where 376 samples have "1Q" instead of "1" for seq reps.
+tree$tip.label = gsub("1Q", "1", tree$tip.label)
+
+# GPI sample site.14.subj.1068.lab.1068.iso.1 is missing from the lineages table. I am adding this manually and setting MYKROBE_LINEAGE_NAME_1 and MYKROBE_LINEAGE_NAME_2 to "Unknown".
+
+missing_sample = data.frame(UNIQUEID = "site.14.subj.1068.lab.1068.iso.1", 
+                            MYKROBE_LINEAGE_NAME_1 = "Unknown", 
+                            MYKROBE_LINEAGE_NAME_2 ="Unknown")
+
+lineages = rbind(lineages, missing_sample)
+
+lineages_gpi = lineages %>%
+  merge(., gpi_metadata, by = "UNIQUEID") %>%
+  select(UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+  
+# Now add QC lineages
+qc_lineages = qc_lineages %>%
+  dplyr::rename("sample" = "V1") %>%
+  mutate(UNIQUEID = sample) %>%
+  dplyr::rename("MYKROBE_LINEAGE_NAME_2" = "V2") %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = str_split(MYKROBE_LINEAGE_NAME_2, "\\.") %>% map_chr(1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_2 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_2)) %>%
+select(sample, UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+
+
+```
+
+
+```{r}
+# Create sample ids in gpi_metadata to match up with tree labels
+gpi_metadata = gpi_metadata %>%
+  mutate(sample = paste0("site.", SITEID,
+                         ".iso.", ISOLATENO,
+                         ".subject.", SUBJID,
+                         ".lab_id.", LABID,
+                         ".seq_reps.", SEQREPS))
+
+# Check if all tree labels (bar 17 QC samples) are in gpi_metadata
+tree$tip.label %>% 
+  as.data.frame() %>%
+  filter(. %notin% gpi_metadata$sample) %>%
+  nrow() # == 17
+
+
+lineages_gpi = lineages_gpi %>%
+  merge(., gpi_metadata, by ="UNIQUEID") %>%
+  select(sample, UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+
+
+lineages_gpi = rbind(lineages_gpi, qc_lineages)
+
+
+# Removing "Mixed" lineage for plotting and replacing with first sample in mixed lineage ids
+lineages_gpi_plot = lineages_gpi %>% 
+  mutate(plot_lineages = case_when(MYKROBE_LINEAGE_NAME_1 != "Mixed" ~ MYKROBE_LINEAGE_NAME_1,
+                        MYKROBE_LINEAGE_NAME_1 == "Mixed" ~ (str_split(MYKROBE_LINEAGE_NAME_2, "\\/") %>% map_chr(1)))) %>%
+  mutate(plot_lineages = gsub("lineage", "Lineage ", plot_lineages)) %>%
+  mutate(plot_parent_lineages = str_split(plot_lineages, "\\.") %>% map_chr(1)) %>%
+  mutate(plot_edited_lineages = case_when(plot_parent_lineages == "Unknown" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Bovis" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Caprae" ~ "Animal/Other",
+                                          grepl("^N", UNIQUEID) ~ "Animal/Other",
+                                          TRUE ~ plot_parent_lineages))
+
+
+plot_colour_ramp = brewer.pal(11, "Spectral")
+
+lineage_colours = plot_colour_ramp[6:11]
+
+lineage_colours[1] = "#bfbfaa"
+lineage_colours[4] = "#66C2A5"
+lineage_colours[5] = "#3288BD"
+
+plot_colours = as.data.frame(cbind(lineage_colours, sort(unique(lineages_gpi_plot$plot_edited_lineages))))
+names(plot_colours) = c("colour", "lineage")
+
+
+lineages_gpi_plot = lineages_gpi_plot %>%
+  mutate(plot_colour = case_when(plot_edited_lineages == plot_colours$lineage[1] ~ plot_colours$colour[1],
+                                 plot_edited_lineages == plot_colours$lineage[2] ~ plot_colours$colour[2],
+                                 plot_edited_lineages == plot_colours$lineage[3] ~ plot_colours$colour[3],
+                                 plot_edited_lineages == plot_colours$lineage[4] ~ plot_colours$colour[4],
+                                 plot_edited_lineages == plot_colours$lineage[5] ~ plot_colours$colour[5],
+                                 plot_edited_lineages == plot_colours$lineage[6] ~ plot_colours$colour[6]))
+
+
+# p = ggtree(tree, layout = "roundrect", colour = "grey50") %<+% 
+#   lineages_gpi_plot + 
+#   geom_tippoint(aes(color=plot_edited_lineages), alpha = 0.7) + 
+#   labs(colour='') +
+#   scale_colour_manual(values = plot_colours$colour)
+
+pcirc = ggtree(tree, layout = "circular", colour = "grey50") %<+% 
+  lineages_gpi_plot + 
+  geom_tippoint(aes(color=plot_edited_lineages), alpha = 0.7) + 
+  labs(colour='') +
+  scale_colour_manual(values = plot_colours$colour) +
+  theme(
+    panel.background = element_rect(fill = "transparent"), # bg of the panel
+    plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
+    panel.grid.major = element_blank(), # get rid of major grid
+    panel.grid.minor = element_blank(), # get rid of minor grid
+    legend.background = element_rect(fill = "transparent", color = NA), # get rid of legend bg
+    legend.box.background = element_rect(fill = "transparent"), # get rid of legend panel bg
+    legend.position = c(0.7,0.1)  ) +
+  geom_treescale(x = 1000, y = 5, fontsize = 10)
+
+
+# pt = ggtree(tree, layout = "roundrect", colour = "grey50") %<+% 
+#   lineages_gpi_plot + 
+#   geom_tippoint(aes(color=plot_edited_lineages), alpha = 0.7) + 
+#   labs(colour='')  +
+#   scale_colour_manual(values = plot_colours$colour) +
+#   theme(
+#     panel.background = element_rect(fill = "transparent"), # bg of the panel
+#     plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
+#     panel.grid.major = element_blank(), # get rid of major grid
+#     panel.grid.minor = element_blank(), # get rid of minor grid
+#     legend.background = element_rect(fill = "transparent", colour = "white"), # get rid of legend bg
+#     legend.box.background = element_rect(fill = "transparent")
+#  )
+```
+
+
+
+```{r}
+# ggsave(p, filename = paste0(OUT_DIR, "gpi_tree_large.pdf"),
+#        device = "pdf", 
+#        width = 100,
+#        height = 100,
+#        limitsize = FALSE)
+
+ggsave(pcirc, filename = paste0(OUT_DIR, "gpi_tree_circular2.pdf"),
+       device = "pdf", 
+       width = 30,
+       height = 30,
+       limitsize = FALSE)
+
+
+# ggsave(pt, filename = paste0(OUT_DIR, "gpi_tree_transparent.pdf"),
+#        device = "pdf", 
+#        width = 16,
+#        height = 12,
+#        limitsize = FALSE,
+#        bg = "transparent")
+# 
+# 
+# ggsave(p, filename = paste0(OUT_DIR, "gpi_tree.pdf"),
+#        device = "pdf", 
+#        width = 20,
+#        height = 20,
+#        limitsize = FALSE,
+#        bg = "transparent")
+```

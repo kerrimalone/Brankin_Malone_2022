@@ -1,0 +1,828 @@
+---
+title: "gpi_map"
+author: "Kerri Malone"
+date: "22/05/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+
+libs_load <- function(x){
+  for( i in x ){
+    print(paste0("Checking for library: ", i))
+    if(require( i , character.only = TRUE ) ){
+      print(paste0(i, " already installed. Loading now"))
+    }
+    #  require returns TRUE invisibly if it was able to load package
+    if( ! require( i , character.only = TRUE ) ){
+      print(paste0(i, " not installed. Trying CRAN for install."))
+      #  If package was not able to be loaded then re-install
+      install.packages( i , dependencies = TRUE )
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i," could not be installed from CRAN. Trying Bionconductor....")
+      BiocManager::install(i)
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i, "could not be installed. Check manually")
+    }
+    #  Load package after installing
+  }
+}
+
+#Load libraries
+libs_load(c("BiocManager","cowplot","data.table","ggmap",
+            "ggrepel","maps", "rnaturalearth",
+            "phangorn","RColorBrewer", "sscatterpie",
+            "sf","tidyverse"))
+
+`%notin%` <- Negate(`%in%`)
+
+
+```
+
+
+``` {r}
+#Add local path to downloaded data_tables from https://ftp.ebi.ac.uk/pub/databases/cryptic/reproducibility/data_tables/cryptic-analysis-group/
+ROOT_DIR = "/example_filepath/"
+
+#Set output directory
+OUT_DIR =  "/output/"
+
+# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
+LINEAGES = "MYKROBE_LINEAGE.csv.gz"
+SAMPLES = "SAMPLES.csv.gz"
+SUBJECTS = "SUBJECTS.csv.gz"
+
+# tree can be found at github.com/kerrimalone/Brankin_Malone_2022 
+CRyPTIC_TREE = "gpi_tree.out"
+
+# Lineages for the QC samples can be found at github.com/kerrimalone/Brankin_Malone_2022
+QC_LINEAGES = "/Users/kmalone/Google Drive/Other computers/My MacBook Pro (1)/gdrive/projects/linTB/out_comas/lineage_classification_QC.csv"
+
+GPI_METADATA = "GPI_LOOKUP.csv.gz"
+
+SITES = "SITES.csv"
+
+COUNTRIES = "COUNTRIES_LOOKUP.csv"
+
+`%notin%` <- Negate(`%in%`)
+
+```
+
+Read in data.  
+
+```{r}
+gpi_metadata = fread(paste0(ROOT_DIR, GPI_METADATA),
+                     header = TRUE)
+
+sites = fread(paste0(ROOT_DIR, SITES),
+              header = TRUE)
+
+subjects = fread(paste0(ROOT_DIR, SUBJECTS),
+                 header = TRUE)
+
+lineages = fread(paste0(ROOT_DIR, LINEAGES),
+                 header = TRUE)
+
+qc_lineages = fread(QC_LINEAGES,
+                    header=F)
+
+
+samples = fread(paste0(ROOT_DIR, SAMPLES),
+                header = TRUE)
+
+countries = fread(paste0(ROOT_DIR, COUNTRIES),
+                  header = TRUE)
+
+tree <- read.tree(CRyPTIC_TREE)
+
+```
+
+
+
+``` {r}
+# World map data
+world_map <- map_data("world", returnclass="sf")
+data('world.cities')
+
+# Sample and country of origin df
+
+samples$SITEID = str_pad(samples$SITEID, pad="0", side="left", width=2)
+
+samples <- samples %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_WHERE_SAMPLE_TAKEN")
+
+countries <- countries %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_CODE_3_LETTER")
+
+samples <- samples %>%
+  left_join(.,countries, by = "COUNTRY", all.x=TRUE)
+
+```
+
+
+
+
+``` {r}
+# GPI sample site.14.subj.1068.lab.1068.iso.1 is missing from the lineages table. I am adding this manually and setting MYKROBE_LINEAGE_NAME_1 and MYKROBE_LINEAGE_NAME_2 to "Unknown".
+
+missing_sample = data.frame(UNIQUEID = "site.14.subj.1068.lab.1068.iso.1", 
+                            MYKROBE_LINEAGE_NAME_1 = "Unknown", 
+                            MYKROBE_LINEAGE_NAME_2 ="Unknown")
+
+lineages = rbind(lineages, missing_sample)
+
+lineages_gpi = lineages %>%
+  merge(., gpi_metadata, by = "UNIQUEID") %>%
+  select(UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+  
+# Now add QC lineages
+qc_lineages = qc_lineages %>%
+  dplyr::rename("sample" = "V1") %>%
+  mutate(UNIQUEID = sample) %>%
+  dplyr::rename("MYKROBE_LINEAGE_NAME_2" = "V2") %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = str_split(MYKROBE_LINEAGE_NAME_2, "\\.") %>% map_chr(1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_2 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_2)) %>%
+select(UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+
+
+lineages_gpi = lineages_gpi %>%
+  merge(., gpi_metadata, by ="UNIQUEID") %>%
+  select(UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+
+
+lineages_gpi = rbind(lineages_gpi, qc_lineages)
+
+
+# Removing "Mixed" lineage for plotting and replacing with first sample in mixed lineage ids
+lineages_gpi_plot = lineages_gpi %>% 
+  mutate(plot_lineages = case_when(MYKROBE_LINEAGE_NAME_1 != "Mixed" ~ MYKROBE_LINEAGE_NAME_1,
+                        MYKROBE_LINEAGE_NAME_1 == "Mixed" ~ (str_split(MYKROBE_LINEAGE_NAME_2, "\\/") %>% map_chr(1)))) %>%
+  mutate(plot_lineages = gsub("lineage", "Lineage ", plot_lineages)) %>%
+  mutate(plot_parent_lineages = str_split(plot_lineages, "\\.") %>% map_chr(1)) %>%
+  mutate(plot_edited_lineages = case_when(plot_parent_lineages == "Unknown" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Bovis" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Caprae" ~ "Animal/Other",
+                                          grepl("^N", .$UNIQUEID) ~ "Animal/Other",
+                                          TRUE ~ plot_parent_lineages))  %>%
+    dplyr::mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+  
+
+samples = samples %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+
+# gpi_metadata = gpi_metadata %>%
+#   mutate(sample = paste0("site.", SITEID,
+#                          ".iso.", ISOLATENO,
+#                          ".subject.", SUBJID,
+#                          ".lab_id.", LABID,
+#                          ".seq_reps.", SEQREPS)) %>%
+#   mutate(MERGE = paste0(SITEID, ".", SUBJID,
+#                            ".", LABID))
+
+
+mixed_samples_gpi = lineages_gpi %>% 
+  filter(MYKROBE_LINEAGE_NAME_1 == "Mixed") %>%
+  mutate(lineage_1 = str_split(MYKROBE_LINEAGE_NAME_2, "/") %>% map_chr(1))%>%
+  mutate(lineage_2 = str_split(MYKROBE_LINEAGE_NAME_2, "/") %>% map_chr(2)) %>%
+  mutate(parent_lineage_1 = str_split(lineage_1, "\\.") %>% map_chr(1)) %>%
+  mutate(parent_lineage_2 = str_split(lineage_2, "\\.") %>% map_chr(1)) %>%
+  mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID, ".", LABID)) %>%
+  merge(., samples, by="MERGE")
+
+
+gpi_samples_with_country = merge(lineages_gpi_plot, samples, by = "MERGE")
+
+
+#What samples do not have country metadata?
+gpi_samples_missing_country = anti_join(lineages_gpi_plot, samples, by = "MERGE")
+
+# Using siteid country of origin for those samples missing proper country metadata
+gpi_samples_missing_country = merge(gpi_samples_missing_country, sites, by = "SITEID")
+
+
+
+
+#cols needed: UNIQUEID, SITEID, plot_edited_lineages, MERGE, CITY, COUNTRY, LONG, LAT
+gpi_samples_with_country_short = gpi_samples_with_country %>%
+  dplyr::rename("SITEID" = "SITEID.x") %>%
+  dplyr::rename("COUNTRY_CODE_3_LETTER" = "COUNTRY") %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_NAME") %>%
+  select(UNIQUEID, SITEID, MERGE, plot_edited_lineages,
+         COUNTRY, LONG, LAT)
+
+gpi_samples_missing_country_short = gpi_samples_missing_country %>%
+  select(UNIQUEID, SITEID, MERGE, plot_edited_lineages,
+         COUNTRY, LONG, LAT)
+
+plot_data = rbind(gpi_samples_with_country_short, gpi_samples_missing_country_short)
+
+
+gpi_samples_count_table = table(plot_data$COUNTRY)
+
+gpi_samples_count_table = as.data.frame(gpi_samples_count_table)
+names(gpi_samples_count_table) = c("COUNTRY", "value")
+
+
+
+capital.cities = world.cities %>% 
+  filter(capital == "1") %>%
+  dplyr::rename("COUNTRY" = "country.etc") %>%
+  mutate(COUNTRY = replace(COUNTRY,
+                           COUNTRY == "UK",
+                           "United Kingdom"))
+
+
+gpi_samples_count_plot = merge(gpi_samples_count_table, capital.cities, by = "COUNTRY")
+table(gpi_samples_count_table$COUNTRY %in% gpi_samples_count_plot$COUNTRY)
+
+# Assignments for ease of mapping, might not be geographically/politically correct.
+gpi_samples_count_plot$continent = c("Europe", "Africa", "South America",
+                                     "Africa", "Asia", "Europe", 
+                                     "Asia", "Europe", "Asia",
+                                     "Asia", "Asia", "Africa",
+                                     "Asia", "South America", "Africa",
+                                     "Europe", "Asia", "Asia", "Africa",
+                                     "Asia", "Europe", "Europe", "Asia")
+
+```
+
+```{r}
+gpi_samples_country_table = t(table(plot_data$plot_edited_lineages, plot_data$COUNTRY))
+gpi_samples_country_table = as.data.frame.matrix(gpi_samples_country_table)
+gpi_samples_country_table$COUNTRY = rownames(gpi_samples_country_table)
+rownames(gpi_samples_country_table) = NULL
+
+
+gpi_samples_country_table_plot = gpi_samples_country_table %>%
+  #mutate(total = rowSums(.[,1:5])) %>%
+  merge(., capital.cities, by = "COUNTRY") %>%
+  select(-capital, -name, -pop) 
+  
+
+gpi_samples_country_table_plot$continent = c("Europe", "Africa", "South America",
+                                     "Africa", "Asia", "Europe", 
+                                     "Asia", "Europe", "Asia",
+                                     "Asia", "Asia", "Africa",
+                                     "Asia", "South America", "Africa",
+                                     "Europe", "Asia", "Asia", "Africa",
+                                     "Asia", "Europe", "Europe", "Asia")
+
+
+world_map <-world_map %>%
+  mutate(myfill = world_map$region %in% plot_data$country)
+
+world_map <- world_map %>%
+  filter(region %notin% c("Antarctica", "USA", "Australia", "Greenland", "Canada"<
+                            "New Zealand", "Iceland"))
+
+
+
+
+```
+
+
+```{r}
+write.csv(gpi_samples_country_table, file = paste0(OUT_DIR, "gpi_country_lineage.csv"))
+```
+
+```{r}
+#sublineages 
+#cols needed: UNIQUEID, SITEID, plot_edited_lineages, MERGE, CITY, COUNTRY, LONG, LAT
+gpi_samples_with_country_short_sublin = gpi_samples_with_country %>%
+  dplyr::rename("SITEID" = "SITEID.x") %>%
+  dplyr::rename("COUNTRY_CODE_3_LETTER" = "COUNTRY") %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_NAME") %>%
+  select(UNIQUEID, SITEID, MERGE, MYKROBE_LINEAGE_NAME_2,
+         COUNTRY, LONG, LAT)
+
+gpi_samples_missing_country_short_sublin = gpi_samples_missing_country %>%
+  select(UNIQUEID, SITEID, MERGE, MYKROBE_LINEAGE_NAME_2,
+         COUNTRY, LONG, LAT)
+
+plot_data_sublin = rbind(gpi_samples_with_country_short_sublin, gpi_samples_missing_country_short_sublin)
+
+
+gpi_samples_count_table_sublin = table(plot_data_sublin$COUNTRY)
+
+gpi_samples_count_table_sublin = as.data.frame(gpi_samples_count_table_sublin)
+names(gpi_samples_count_table_sublin) = c("COUNTRY", "value")
+
+
+
+capital.cities = world.cities %>% 
+  filter(capital == "1") %>%
+  dplyr::rename("COUNTRY" = "country.etc") %>%
+  mutate(COUNTRY = replace(COUNTRY,
+                           COUNTRY == "UK",
+                           "United Kingdom"))
+# 
+# london_coords = c(51.51574107816272, -0.12769560152793386)
+# 
+# country_coords = country_coords %>%
+#   mutate(LAT=replace(LAT,
+#                      COUNTRY=="United Kingdom",
+#                      london_coords[1])) %>%
+#   mutate(LONG=replace(LONG,
+#                       COUNTRY=="United Kingdom",
+#                       london_coords[2]))
+
+
+gpi_samples_count_plotplot_data_sublin = merge(gpi_samples_count_table_sublin, capital.cities, by = "COUNTRY")
+table(gpi_samples_count_table_sublin$COUNTRY %in% gpi_samples_count_plot$COUNTRY)
+
+
+
+```
+
+```{r}
+
+
+plot_data_sublin_edit = plot_data_sublin %>%
+  mutate(MYKROBE_LINEAGE_NAME_2 = case_when(grepl("/", MYKROBE_LINEAGE_NAME_2) ~"Mixed",
+                                               TRUE ~ MYKROBE_LINEAGE_NAME_2))
+
+
+gpi_samples_country_table_sublin = t(table(plot_data_sublin_edit$MYKROBE_LINEAGE_NAME_2, plot_data_sublin_edit$COUNTRY))
+gpi_samples_country_table_sublin = as.data.frame.matrix(gpi_samples_country_table_sublin)
+gpi_samples_country_table_sublin$COUNTRY = rownames(gpi_samples_country_table_sublin)
+rownames(gpi_samples_country_table_sublin) = NULL
+```
+
+
+
+```{r}
+write.csv(gpi_samples_country_table_sublin, file = paste0(OUT_DIR, "gpi_country_sublineage.csv"))
+```
+
+
+``` {r}
+
+getPalette = colorRampPalette(brewer.pal(9, "Paired"))
+
+```
+
+```{r}
+
+
+world_pie.list <- gpi_samples_country_table_plot %>% 
+  tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent) %>%
+  tidyr::nest(type, value) %>%
+
+  # make a pie chart from each row, & convert to grob
+  mutate(world_pie.grob = purrr::map(data,
+                               function(d) ggplotGrob(ggplot(d, 
+                                                             aes(x = 1, y = value, fill = type)) +
+                                                        geom_col(color = "black",
+                                                                 show.legend = FALSE) +
+                                                        coord_polar(theta = "y") +
+                                                        theme_void()))) %>%
+
+  # convert each grob to an annotation_custom layer. I've also adjusted the radius
+  # value to a reasonable size (based on my screen resolutions).
+  rowwise() %>%
+  mutate(radius = 1 * 4) %>%
+  mutate(subgrob = list(annotation_custom(grob = world_pie.grob,
+                                          xmin = long - radius, xmax = long + radius,
+                                          ymin = lat - radius, ymax = lat + radius)))
+
+
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+
+world_plot = ggplot(world) +
+    geom_sf(fill="#ebebeb", colour = "#ebebeb", size = 0.25) +
+    coord_sf(xlim = c(-90, 145), ylim=c(-33, 70),expand = FALSE) + 
+    theme_minimal() + 
+    geom_tile(data = gpi_samples_country_table_plot %>% tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent),
+              aes(x = long, y = lat, fill = type), 
+              color = "black", width = 0.01, height = 0.01, 
+              inherit.aes = FALSE) + 
+    geom_label_repel(data = gpi_samples_count_plot, 
+                     aes(x = long, y = lat,
+                         group=COUNTRY,
+                         label = paste0(COUNTRY, ",", value)), 
+                     size = 3, 
+                     label.size = NA,
+                     point.size = NA) +
+    theme(legend.position = "None") +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+          panel.background = element_blank(), axis.line = element_blank(), axis.text = element_blank(), axis.title = element_blank())
+
+
+
+```
+
+
+
+```{r}
+ggsave(world_plot,
+       filename = paste0(OUT_DIR, "gpi_world_map_counts.png"),
+       device="png",
+       limitsize = F,
+       height = 3.75,
+       width = 5.8
+       )
+
+ggsave(world_plot,
+       filename = paste0(OUT_DIR, "gpi_world_map_counts.tiff"),
+       device="tiff",
+       dpi= "print",
+       height = 3.75,
+       width = 5.8
+       )
+
+#for publication
+ggsave(world_plot,
+       filename = paste0(OUT_DIR, "fig2.tiff"),
+       device="tiff",
+       dpi= "print",
+       height = 3.75,
+       width = 5.8
+       )
+```
+
+
+
+``` {r}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+asia_count_plot = gpi_samples_count_plot %>% filter(continent == "Asia")
+asia_pie_plot = gpi_samples_country_table_plot %>% filter(continent == "Asia")
+
+asia_count_plot = asia_count_plot %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "China",
+                       34.37)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "China",
+                       98.93)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "India",
+                       22.17)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "India",
+                       79.07)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Vietnam",
+                       13.65)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Vietnam",
+                       108.29)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Pakistan",
+                       29.19)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Pakistan",
+                       68.76))
+
+
+asia_pie_plot = asia_pie_plot %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "China",
+                       34.37)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "China",
+                       98.93)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "India",
+                       22.17)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "India",
+                       79.07)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Vietnam",
+                       13.65)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Vietnam",
+                       108.29)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Pakistan",
+                       29.19)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Pakistan",
+                       68.76))
+
+
+asia_pie_plot = as.data.frame(asia_pie_plot)
+
+asia_pie.list <- asia_pie_plot %>% 
+  tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent) %>%
+  tidyr::nest(type, value) %>%
+
+  # make a pie chart from each row, & convert to grob
+  mutate(asia_pie.grob = purrr::map(data,
+                               function(d) ggplotGrob(ggplot(d, 
+                                                             aes(x = 1, y = value, fill = type)) +
+                                                        geom_col(color = "black",
+                                                                 show.legend = FALSE) +
+                                                        coord_polar(theta = "y") +
+                                                        theme_void()))) %>%
+
+  # convert each grob to an annotation_custom layer. I've also adjusted the radius
+  # value to a reasonable size (based on my screen resolutions).
+  rowwise() %>%
+  mutate(radius = 1 * 4) %>%
+  mutate(subgrob = list(annotation_custom(grob = asia_pie.grob,
+                                          xmin = long - radius, xmax = long + radius,
+                                          ymin = lat - radius, ymax = lat + radius)))
+
+
+
+Asia <- world[which(world$continent == "Asia"),]
+
+
+asia_plot = ggplot(Asia) +
+    geom_sf(fill="#ebebeb", colour = "#a8a8a8", size = 0.25
+            ) +
+    coord_sf(xlim = c(50,145), ylim = c(9,50), expand = FALSE) + 
+  theme_void() + 
+  geom_tile(data = asia_pie_plot %>% tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent),
+             aes(x = long, y = lat, fill = type), 
+             color = "black", width = 0.01, height = 0.01, 
+            inherit.aes = FALSE) + 
+  asia_pie.list$subgrob +
+      geom_label(data = asia_count_plot, aes(x = long, y = lat,
+                                                        group=COUNTRY, label = value), label.size = 0.1, size = 5 ) +
+      geom_text(data = asia_count_plot, aes(x = long, y = lat -3.4,
+                                                        group=COUNTRY, label = COUNTRY),size=4.5) +
+  theme(legend.position = "None")
+
+
+
+
+
+```
+
+
+
+
+``` {r}
+
+europe_count_plot = gpi_samples_count_plot %>% filter(continent == "Europe")
+europe_pie_plot = gpi_samples_country_table_plot %>% filter(continent == "Europe")
+
+
+europe_pie_plot = as.data.frame(europe_pie_plot)
+
+europe_pie.list <- europe_pie_plot %>% 
+  tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent) %>%
+  tidyr::nest(type, value) %>%
+
+  # make a pie chart from each row, & convert to grob
+  mutate(europe_pie.grob = purrr::map(data,
+                               function(d) ggplotGrob(ggplot(d, 
+                                                             aes(x = 1, y = value, fill = type)) +
+                                                        geom_col(color = "black",
+                                                                 show.legend = FALSE) +
+                                                        coord_polar(theta = "y") +
+                                                        theme_void()))) %>%
+
+  # convert each grob to an annotation_custom layer. I've also adjusted the radius
+  # value to a reasonable size (based on my screen resolutions).
+  rowwise() %>%
+  mutate(radius = 1 * 3) %>%
+  mutate(subgrob = list(annotation_custom(grob = europe_pie.grob,
+                                          xmin = long - radius, xmax = long + radius,
+                                          ymin = lat - radius, ymax = lat + radius)))
+
+
+
+europe <- world[which(world$continent %in% c("Europe")),]
+
+europe_plot =  ggplot(europe) +
+    geom_sf(fill="#ebebeb", colour = "#a8a8a8", size = 0.25
+            ) +
+    coord_sf(xlim = c(-7, 37), ylim = c(36,62), expand = FALSE) + 
+  theme_void() + 
+  geom_tile(data = europe_pie_plot %>% tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent),
+             aes(x = long, y = lat, fill = type), 
+             color = "black", width = 0.01, height = 0.01, 
+            inherit.aes = FALSE) + 
+  europe_pie.list$subgrob +
+      geom_label(data = europe_count_plot, aes(x = long, y = lat,
+                                                        group=COUNTRY, label = value), label.size = 0.1,size=6 ) +
+      geom_text(data = europe_count_plot, aes(x = long, y = lat -2,
+                                                        group=COUNTRY, label = COUNTRY), size=5) +
+  theme(legend.position = "None") 
+
+
+```
+
+
+
+
+
+
+
+
+``` {r}
+
+africa_count_plot = gpi_samples_count_plot %>% filter(continent == "Africa")
+africa_pie_plot = gpi_samples_country_table_plot %>% filter(continent == "Africa")
+
+
+africa_pie_plot = as.data.frame(africa_pie_plot)
+
+
+africa_pie_plot = africa_pie_plot %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Algeria",
+                       28.65)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Algeria",
+                       2.42)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "South Africa",
+                       -28.68)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "South Africa",
+                       24.09))
+
+africa_count_plot = africa_count_plot %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "Algeria",
+                       28.65)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "Algeria",
+                       2.42)) %>%
+  mutate(lat = replace(lat,
+                       COUNTRY == "South Africa",
+                       -28.68)) %>%
+  mutate(long = replace(long,
+                       COUNTRY == "South Africa",
+                       24.09))
+
+africa_pie.list <- africa_pie_plot %>% 
+  tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent) %>%
+  tidyr::nest(type, value) %>%
+
+  # make a pie chart from each row, & convert to grob
+  mutate(africa_pie.grob = purrr::map(data,
+                               function(d) ggplotGrob(ggplot(d, 
+                                                             aes(x = 1, y = value, fill = type)) +
+                                                        geom_col(color = "black",
+                                                                 show.legend = FALSE) +
+                                                        coord_polar(theta = "y") +
+                                                        theme_void()))) %>%
+
+  # convert each grob to an annotation_custom layer. I've also adjusted the radius
+  # value to a reasonable size (based on my screen resolutions).
+  rowwise() %>%
+  mutate(radius = 1 * 5) %>%
+  mutate(subgrob = list(annotation_custom(grob = africa_pie.grob,
+                                          xmin = long - radius, xmax = long + radius,
+                                          ymin = lat - radius, ymax = lat + radius)))
+
+
+
+africa <- world[which(world$continent %in% c("Africa")),]
+
+africa_plot =  ggplot(africa) +
+    geom_sf(fill="#ebebeb", colour = "#a8a8a8", size = 0.25
+            ) +
+    coord_sf(xlim = c(-14, 42), ylim = c(-40,50), expand = FALSE) + 
+  theme_void() + 
+  geom_tile(data = africa_pie_plot %>% tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent),
+             aes(x = long, y = lat, fill = type), 
+             color = "black", width = 0.01, height = 0.01, 
+            inherit.aes = FALSE) + 
+  africa_pie.list$subgrob +
+      geom_label(data = africa_count_plot, aes(x = long, y = lat,
+                                                        group=COUNTRY, label = value), label.size = 0.1) +
+      geom_text(data = africa_count_plot, aes(x = long, y = lat -5,
+                                                        group=COUNTRY, label = COUNTRY), size=4) +
+  theme(legend.position = "left")
+
+```
+
+
+
+
+
+
+``` {r}
+
+south_america_count_plot = gpi_samples_count_plot %>% filter(continent == "South America")
+south_america_pie_plot = gpi_samples_country_table_plot %>% filter(continent == "South America")
+
+
+south_america_pie_plot = as.data.frame(south_america_pie_plot)
+
+south_america_pie.list <- south_america_pie_plot %>% 
+  tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent) %>%
+  tidyr::nest(type, value) %>%
+
+  # make a pie chart from each row, & convert to grob
+  mutate(south_america_pie.grob = purrr::map(data,
+                               function(d) ggplotGrob(ggplot(d, 
+                                                             aes(x = 1, y = value, fill = type)) +
+                                                        geom_col(color = "black",
+                                                                 show.legend = FALSE) +
+                                                        coord_polar(theta = "y") +
+                                                        theme_void()))) %>%
+
+  # convert each grob to an annotation_custom layer. I've also adjusted the radius
+  # value to a reasonable size (based on my screen resolutions).
+  rowwise() %>%
+  mutate(radius = 1 * 5) %>%
+  mutate(subgrob = list(annotation_custom(grob = south_america_pie.grob,
+                                          xmin = long - radius, xmax = long + radius,
+                                          ymin = lat - radius, ymax = lat + radius)))
+
+
+
+south_america <- world[which(world$continent %in% c("South America")),]
+
+south_america_plot =  ggplot(south_america) +
+    geom_sf(fill="#ebebeb", colour = "#a8a8a8", size = 0.25
+            ) +
+    coord_sf(xlim=c(-85,-30), ylim=c(-35,5),expand = FALSE) + 
+  theme_void() + 
+  geom_tile(data = south_america_pie_plot %>% tidyr::gather(type, value, -COUNTRY, -lat, -long, -continent),
+             aes(x = long, y = lat, fill = type), 
+             color = "black", width = 0.01, height = 0.01, 
+            inherit.aes = FALSE) + 
+  south_america_pie.list$subgrob +
+      geom_label(data = south_america_count_plot, aes(x = long, y = lat,
+                                                        group=COUNTRY, label = value), label.size = 0.1, size=8 ) +
+      geom_text(data = south_america_count_plot, aes(x = long, y = lat -4.5,
+                                                        group=COUNTRY, label = COUNTRY),size=6.5) +
+  theme(legend.position = "None") 
+
+
+```
+
+
+```{r}
+ggsave(asia_plot,
+       filename = paste0(OUT_DIR, "gpi_map_asia.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 8.5,
+       width = 13.5
+       )
+
+ggsave(africa_plot,
+       filename = paste0(OUT_DIR, "gpi_map_africa.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 8.5,
+       width = 13.5
+       )
+
+ggsave(europe_plot,
+       filename = paste0(OUT_DIR, "gpi_map_europe.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 8.5,
+       width = 13.5
+       )
+
+
+ggsave(south_america_plot,
+       filename = paste0(OUT_DIR, "gpi_map_south_america.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 8.5,
+       width = 13.5
+       )
+```
+
+
+
+```{r}
+library(corrplot)
+chi_res = chisq.test(t(table(plot_data$plot_edited_lineages, plot_data$COUNTRY)))
+
+contrib <- 100*chi_res$residuals^2/chi_res$statistic
+
+tiff(height=600, width=600, file=paste0(OUT_DIR, "gpi_country_lineage_corrplot.tiff"), type="cairo")
+corrplot(contrib, is.cor = FALSE,
+                     tl.col = "black",
+                     cl.align.text = "l")
+dev.off()
+```

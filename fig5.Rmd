@@ -1,0 +1,888 @@
+---
+title: "NRD_tree"
+author: "Kerri Malone"
+date: "26/05/2021"
+output: html_document
+---
+
+
+```{r setup}
+
+libs_load <- function(x){
+  for( i in x ){
+    print(paste0("Checking for library: ", i))
+    if(require( i , character.only = TRUE ) ){
+      print(paste0(i, " already installed. Loading now"))
+    }
+    #  require returns TRUE invisibly if it was able to load package
+    if( ! require( i , character.only = TRUE ) ){
+      print(paste0(i, " not installed. Trying CRAN for install."))
+      #  If package was not able to be loaded then re-install
+      install.packages( i , dependencies = TRUE )
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i," could not be installed from CRAN. Trying Bionconductor....")
+      BiocManager::install(i)
+      require( i , character.only = TRUE )
+      paste0(i, " installed and loaded successfully")
+    }
+    if ( ! require(i, character.only=TRUE) ) {
+      paste0(i, "could not be installed. Check manually")
+    }
+    #  Load package after installing
+  }
+}
+
+#Load libraries
+libs_load(c("ape","corrplot","data.table",
+            "ggpubr","ggrepel","ggtree",
+            "ggtreeExtra", "ggnewscale",
+            "RColorBrewer","reshape2",
+            "tidyverse", "treeio"))
+
+`%notin%` <- Negate(`%in%`)
+
+```
+
+
+``` {r}
+#Add local path to downloaded data_tables from https://ftp.ebi.ac.uk/pub/databases/cryptic/reproducibility/data_tables/cryptic-analysis-group/
+ROOT_DIR = "/example_filepath/"
+
+#Set output directory
+OUT_DIR =  "/output/"
+
+# Lineages can be found at github.com/kerrimalone/Brankin_Malone_2022
+LINEAGES = "MYKROBE_LINEAGE.csv.gz"
+
+SAMPLES = "SAMPLES.csv.gz"
+
+SUBJECTS = "SUBJECTS.csv.gz"
+
+# tree can be found at github.com/kerrimalone/Brankin_Malone_2022 
+CRyPTIC_TREE = "cryptic_tree.out"
+
+# Lineages for the QC samples can be found at github.com/kerrimalone/Brankin_Malone_2022
+QC_LINEAGES = "/Users/kmalone/gdrive/projects/linTB/out_comas/lineage_classification.csv"
+
+GPI_METADATA = "GPI_LOOKUP.csv.gz"
+
+SITES = "SITES.csv"
+
+COUNTRIES = "COUNTRIES_LOOKUP.csv"
+
+PHENOTYPES = "UKMYC_PHENOTYPES.csv"
+
+EFFECTS= "EFFECTS.csv.gz"
+
+# Distance matrix can be found at github.com/kerrimalone/Brankin_Malone_2022
+MATRIX = "01.distances.distance_matrix.txt.gz"
+
+
+
+`%notin%` <- Negate(`%in%`)
+
+```
+
+Read in data.  
+
+```{r}
+gpi_metadata = fread(paste0(ROOT_DIR, GPI_METADATA),
+                     header = TRUE)
+
+sites = fread(paste0(ROOT_DIR, SITES),
+              header = TRUE)
+
+subjects = fread(paste0(ROOT_DIR, SUBJECTS),
+                 header = TRUE)
+
+lineages = fread(paste0(ROOT_DIR, LINEAGES),
+                 header = TRUE)
+
+qc_lineages = fread(QC_LINEAGES,
+                    header=F)
+
+
+samples = fread(paste0(ROOT_DIR, SAMPLES),
+                header = TRUE)
+
+countries = fread(paste0(ROOT_DIR, COUNTRIES),
+                  header = TRUE)
+
+tree <- read.tree(CRyPTIC_TREE)
+
+phenotypes = fread(paste0(ROOT_DIR, PHENOTYPES))
+
+effects = fread(paste0(ROOT_DIR, EFFECTS))
+
+```
+
+
+```{r}
+# Sample and country of origin df
+
+samples$SITEID = str_pad(samples$SITEID, pad="0", side="left", width=2)
+
+samples <- samples %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_WHERE_SAMPLE_TAKEN")
+
+countries <- countries %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_CODE_3_LETTER")
+
+samples <- samples %>%
+  left_join(.,countries, by = "COUNTRY", all.x=TRUE)
+
+
+gpi_metadata = gpi_metadata %>%
+  mutate(sample = paste0("site.", SITEID,
+                         ".iso.", ISOLATENO,
+                         ".subject.", SUBJID,
+                         ".lab_id.", LABID,
+                         ".seq_reps.", SEQREPS)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+```
+
+
+
+
+``` {r}
+# GPI sample site.14.subj.1068.lab.1068.iso.1 is missing from the lineages table. I am adding this manually and setting MYKROBE_LINEAGE_NAME_1 and MYKROBE_LINEAGE_NAME_2 to "Unknown".
+missing_sample = data.frame(UNIQUEID = "site.14.subj.1068.lab.1068.iso.1", 
+                            MYKROBE_LINEAGE_NAME_1 = "Unknown", 
+                            MYKROBE_LINEAGE_NAME_2 ="Unknown")
+
+
+lineages = rbind(lineages, missing_sample)
+
+lineages_gpi = lineages %>%
+  merge(., gpi_metadata, by = "UNIQUEID") %>%
+  select(sample, UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+  
+# Now add QC lineages
+qc_lineages = qc_lineages %>%
+  dplyr::rename("sample" = "V1") %>%
+  mutate(UNIQUEID = sample) %>%
+  dplyr::rename("MYKROBE_LINEAGE_NAME_2" = "V2") %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = str_split(MYKROBE_LINEAGE_NAME_2, "\\.") %>% map_chr(1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_1 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_1)) %>%
+  mutate(MYKROBE_LINEAGE_NAME_2 = gsub("lineage", "Lineage ", MYKROBE_LINEAGE_NAME_2)) %>%
+select(sample,UNIQUEID, MYKROBE_LINEAGE_NAME_1, MYKROBE_LINEAGE_NAME_2)
+
+
+
+lineages_gpi = rbind(lineages_gpi, qc_lineages)
+
+
+# Removing "Mixed" lineage for plotting and replacing with first sample in mixed lineage ids
+lineages_gpi_plot = lineages_gpi %>% 
+  mutate(plot_lineages = case_when(MYKROBE_LINEAGE_NAME_1 != "Mixed" ~ MYKROBE_LINEAGE_NAME_1,
+                        MYKROBE_LINEAGE_NAME_1 == "Mixed" ~ (str_split(MYKROBE_LINEAGE_NAME_2, "\\/") %>% map_chr(1)))) %>%
+  mutate(plot_lineages = gsub("lineage", "Lineage ", plot_lineages)) %>%
+  mutate(plot_parent_lineages = str_split(plot_lineages, "\\.") %>% map_chr(1)) %>%
+  mutate(plot_edited_lineages = case_when(plot_parent_lineages == "Unknown" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Bovis" ~ "Animal/Other",
+                                          plot_parent_lineages == "Lineage Caprae" ~ "Animal/Other",
+                                          grepl("^N", .$UNIQUEID) ~ "Animal/Other",
+                                          TRUE ~ plot_parent_lineages))  %>%
+    dplyr::mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+
+samples = samples %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+
+
+gpi_samples_with_country = merge(lineages_gpi_plot, samples, by = "MERGE")
+
+
+#What samples do not have country metadata?
+gpi_samples_missing_country = anti_join(lineages_gpi_plot, samples, by = "MERGE")
+
+# Using siteid country of origin for those samples missing proper country metadata
+gpi_samples_missing_country = merge(gpi_samples_missing_country, sites, by = "SITEID")
+
+
+
+
+#cols needed: UNIQUEID, SITEID, plot_edited_lineages, MERGE, CITY, COUNTRY, LONG, LAT
+gpi_samples_with_country_short = gpi_samples_with_country %>%
+  dplyr::rename("SITEID" = "SITEID.x") %>%
+  dplyr::rename("COUNTRY_CODE_3_LETTER" = "COUNTRY") %>%
+  dplyr::rename("COUNTRY" = "COUNTRY_NAME") %>%
+  select(UNIQUEID, SITEID, MERGE, plot_edited_lineages,
+         COUNTRY, LONG, LAT)
+
+gpi_samples_missing_country_short = gpi_samples_missing_country %>%
+  select(UNIQUEID, SITEID, MERGE, plot_edited_lineages,
+         COUNTRY, LONG, LAT)
+
+gpi_samples_countries = rbind(gpi_samples_with_country_short, gpi_samples_missing_country_short)
+```
+
+
+
+```{r}
+#Removing LOW PHENOTYPE_QUALITY
+phenotypes_gpi = phenotypes %>%
+  filter(BELONGS_GPI == TRUE) %>%
+  filter(DILUTION > 0) %>%
+  filter(DRUG != "PAS") %>%
+  filter(BINARY_PHENOTYPE != "/NaN") %>%
+  merge(., gpi_metadata, by="UNIQUEID") %>%
+  select(UNIQUEID, DRUG, BINARY_PHENOTYPE, sample) %>%
+  pivot_wider(values_from = BINARY_PHENOTYPE, names_from = DRUG) 
+
+
+phenotypes_gpi = print.data.frame(as.data.frame(phenotypes_gpi), quote = FALSE)
+
+
+# Converting I for INH to R and RIF and RFB to S as per the ECOFFs
+phenotypes_gpi = phenotypes_gpi %>%
+  mutate(INH = replace(INH,
+                       INH == "I",
+                       "R")) %>%
+  mutate(RIF = replace(RIF,
+                       RIF == "I",
+                       "S")) %>%
+  mutate(RFB = replace(RFB,
+                       RFB == "I",
+                       "S"))
+
+
+
+phenotypes_gpi = phenotypes_gpi %>%
+  mutate(SITEID = str_split(sample,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(sample,"\\.lab\\_id\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subject\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(sample,"\\.seq\\_reps\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\_id\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID))
+
+```
+
+
+```{r}
+total_phenotyped = nrow(phenotypes_gpi)
+
+#Find variants present in population at 5% or greater to remove
+bdq_overrep_vars = effects %>% 
+filter(DEFAULT_CATALOGUE == "TRUE") %>%
+filter(PREDICTION  == "U") %>%
+filter(DRUG == "BDQ") %>%
+merge(., phenotypes_gpi, by="UNIQUEID") %>%
+ with(table(.$GENE, .$MUTATION)) %>%
+  as.data.frame() %>%
+  mutate(ratio =  Freq/total_phenotyped) %>%
+  filter(ratio >= 0.05) %>%
+  mutate(MERGE_VAR = paste0(Var1, "_", Var2))
+
+
+# Get samples resistant to NRDs and pull out mutations from effects_xxx
+effects_bdq = effects %>%
+  filter(DRUG %in% c("BDQ")) %>%
+  filter(CATALOGUE_VERSION == "v1.31") %>%
+  filter(PREDICTION  == "U") %>%
+  mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID)) %>%
+  mutate(MERGE_VAR = paste0(GENE, "_", MUTATION)) %>%
+  mutate(TO_PLOT = case_when(MERGE_VAR %in% bdq_overrep_vars$MERGE_VAR ~ FALSE,
+                             TRUE ~ TRUE))
+
+bdq_res_samples = phenotypes_gpi %>%
+  filter(BDQ == "R") %>%
+  merge(.,effects_bdq, by="MERGE") %>%
+  merge(., gpi_samples_countries, by="MERGE")
+
+bdq_res_samples[!duplicated(bdq_res_samples$MERGE),] %>% with(table(.$COUNTRY))
+
+```
+
+
+
+
+```{r}
+#Find variants present in population at 5% or greater to remove
+cfz_overrep_vars = effects %>% 
+filter(DEFAULT_CATALOGUE == "TRUE") %>%
+filter(DRUG == "CFZ") %>%
+  filter(PREDICTION  == "U") %>%
+merge(., phenotypes_gpi, by="UNIQUEID") %>%
+ with(table(.$GENE, .$MUTATION)) %>%
+  as.data.frame() %>%
+  mutate(ratio =  Freq/total_phenotyped) %>%
+  filter(ratio >= 0.05) %>%
+  mutate(MERGE_VAR = paste0(Var1, "_", Var2))
+
+
+# Get samples resistant to bcd and pull out mutations from effects_bcd
+effects_cfz = effects %>%
+  filter(DRUG %in% c("CFZ")) %>%
+  filter(CATALOGUE_VERSION == "v1.31") %>%
+    filter(PREDICTION  == "U") %>%
+  mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID)) %>%
+  mutate(MERGE_VAR = paste0(GENE, "_", MUTATION)) %>%
+  mutate(TO_PLOT = case_when(MERGE_VAR %in% cfz_overrep_vars$MERGE_VAR ~ FALSE,
+                             TRUE ~ TRUE))
+
+#effects %>% filter(DRUG == "cfz") %>% select(GENE, MUTATION) %>% distinct() %>% with(table(.$GENE))
+
+cfz_res_samples = phenotypes_gpi %>%
+  filter(CFZ == "R") %>%
+  merge(.,effects_cfz, by="MERGE") %>%
+  merge(., gpi_samples_countries, by="MERGE")
+
+cfz_res_samples[!duplicated(cfz_res_samples$MERGE),] %>% with(table(.$COUNTRY))
+
+```
+
+
+
+```{r}
+#Find variants present in population at 5% or greater to remove
+dlm_overrep_vars = effects %>% 
+filter(DEFAULT_CATALOGUE == "TRUE") %>%
+filter(DRUG == "DLM") %>%
+    filter(PREDICTION  == "U") %>%
+  merge(., phenotypes_gpi, by="UNIQUEID") %>%
+ with(table(.$GENE, .$MUTATION)) %>%
+  as.data.frame() %>%
+  mutate(ratio =  Freq/total_phenotyped) %>%
+  filter(ratio >= 0.05) %>%
+  mutate(MERGE_VAR = paste0(Var1, "_", Var2))
+
+
+# Get samples resistant to bcd and pull out mutations from effects_bcd
+effects_dlm = effects %>%
+  filter(DRUG %in% c("DLM")) %>%
+  filter(CATALOGUE_VERSION == "v1.31") %>%
+    filter(PREDICTION  == "U") %>%
+  mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID)) %>%
+  mutate(MERGE_VAR = paste0(GENE, "_", MUTATION)) %>%
+  mutate(TO_PLOT = case_when(MERGE_VAR %in% dlm_overrep_vars$MERGE_VAR ~FALSE,
+                             TRUE ~ TRUE))
+  
+
+#effects %>% filter(DRUG == "dlm") %>% select(GENE, MUTATION) %>% distinct() %>% with(table(.$GENE))
+
+dlm_res_samples = phenotypes_gpi %>%
+  filter(DLM == "R") %>%
+  merge(.,effects_dlm, by="MERGE") %>%
+  merge(., gpi_samples_countries, by="MERGE")
+
+dlm_res_samples[!duplicated(dlm_res_samples$MERGE),] %>% with(table(.$COUNTRY))
+
+```
+
+
+
+
+```{r}
+#Find variants present in population at 5% or greater to remove
+lzd_overrep_vars = effects %>% 
+filter(DEFAULT_CATALOGUE == "TRUE") %>%
+filter(DRUG == "LZD") %>%
+    filter(PREDICTION  == "U") %>%
+merge(., phenotypes_gpi, by="UNIQUEID") %>%
+ with(table(.$GENE, .$MUTATION)) %>%
+  as.data.frame() %>%
+  mutate(ratio =  Freq/total_phenotyped) %>%
+  filter(ratio >= 0.05) %>%
+  mutate(MERGE_VAR = paste0(Var1, "_", Var2))
+
+
+# Get samples resistant to NRDs and pull out mutations from effects_bcd
+effects_lzd = effects %>%
+  filter(DRUG %in% c("LZD")) %>%
+  filter(CATALOGUE_VERSION == "v1.31") %>%
+    filter(PREDICTION  == "U") %>%
+  mutate(SITEID = str_split(UNIQUEID,"\\.subj\\..",) %>% map_chr(1)) %>%
+  mutate(SITEID = gsub("site\\.", "", SITEID)) %>%
+  mutate(SUBJID = str_split(UNIQUEID,"\\.lab\\..",) %>% map_chr(1)) %>%
+  mutate(SUBJID = gsub("site\\..*\\.subj\\.", "", SUBJID)) %>%
+  mutate(LABID =  str_split(UNIQUEID,"\\.iso\\..",) %>% map_chr(1)) %>%
+  mutate(LABID = gsub("site\\..*\\.lab\\.", "", LABID)) %>%
+  mutate(MERGE = paste0(SITEID, ".", SUBJID,
+                           ".", LABID)) %>%
+  mutate(MERGE_VAR = paste0(GENE, "_", MUTATION)) %>%
+  mutate(TO_PLOT = case_when(MERGE_VAR %in% lzd_overrep_vars$MERGE_VAR ~FALSE,
+                             TRUE ~ TRUE))
+
+#effects %>% filter(DRUG == "lzd") %>% select(GENE, MUTATION) %>% distinct() %>% with(table(.$GENE))
+
+lzd_res_samples = phenotypes_gpi %>%
+  filter(LZD == "R") %>%
+  merge(.,effects_lzd, by="MERGE") %>%
+  merge(., gpi_samples_countries, by="MERGE")
+
+#lzd_res_samples[!duplicated(lzd_res_samples$MERGE),] %>% with(table(.$COUNTRY))
+
+```
+
+
+```{r}
+plot_colour_ramp = brewer.pal(11, "Spectral")
+
+lineage_colours = plot_colour_ramp[6:11]
+
+lineage_colours[1] = "#bfbfaa"
+lineage_colours[4] = "#66C2A5"
+lineage_colours[5] = "#3288BD"
+
+plot_colours = as.data.frame(cbind(lineage_colours, sort(unique(lineages_gpi_plot$plot_edited_lineages))))
+names(plot_colours) = c("colour", "lineage")
+
+drug_cols = plot_colour_ramp[2:5]
+
+```
+
+
+```{r}
+# Stacked bar chart for countries
+all_bcdl_res_data = rbind(bdq_res_samples,
+                         cfz_res_samples,
+                         dlm_res_samples,
+                         lzd_res_samples)
+
+
+bcdl_res_country_table = as.data.frame.matrix(all_bcdl_res_data[!duplicated(all_bcdl_res_data$MERGE),] %>% with(table(.$COUNTRY, .$DRUG)))
+
+bcdl_res_country_table = bcdl_res_country_table %>%
+  rownames_to_column("Country")
+
+bcdl_res_country_table = reshape2::melt(bcdl_res_country_table)
+names(bcdl_res_country_table)[1:3] = c("Country", "Drug", "Value")
+
+
+country_barchart = ggplot(bcdl_res_country_table, aes(x = Country, y = Value, fill = Drug)) + 
+  geom_bar(position = "stack", stat = "identity") + 
+  scale_fill_manual(values = drug_cols) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "grey80")) +
+  xlab("") +
+  ylab("# samples") + 
+  scale_y_continuous(limits = c(0, 250), breaks = seq(0, 250, by = 25),expand = c(0,0)) +
+  theme(legend.title = element_blank()) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) 
+
+```
+
+
+
+```{r}
+# Fix tree labels where 376 samples have "1Q" instead of "1" for seq reps.
+tree$tip.label = gsub("1Q", "1", tree$tip.label)
+
+
+# Create sample ids in gpi_metadata to match up with tree labels
+gpi_metadata = gpi_metadata %>%
+  mutate(sample = paste0("site.", SITEID,
+                         ".iso.", ISOLATENO,
+                         ".subject.", SUBJID,
+                         ".lab_id.", LABID,
+                         ".seq_reps.", SEQREPS))
+
+# Check if all tree labels (bar 17 QC samples) are in gpi_metadata
+tree$tip.label %>% 
+  as.data.frame() %>%
+  filter(. %notin% gpi_metadata$sample) %>%
+  nrow() # == 17
+
+
+
+```
+
+
+```{r}
+
+# Read in the sample names that are wanted.
+# Read in the first col of the matrix that contains all of the sample names.
+# Slice the matrix, transpose and slice again.
+
+bigmat = as.data.frame(fread(MATRIX, 
+                             skip = 1, 
+                             sep = "\t"))
+
+bigmat = bigmat %>% column_to_rownames('V1')
+
+colnames(bigmat)<-rownames(bigmat)
+
+bdq_submat = bigmat %>% select(bdq_res_samples$sample)
+bdq_submatT = as.data.frame(t(bdq_submat))
+
+bdq_submat_cols = colnames(bdq_submat)
+rownames(bdq_submatT) <- bdq_submat_cols
+colnames(bdq_submatT) <-colnames(bigmat)
+
+bdq_final_distmat = bdq_submatT %>% select(bdq_res_samples$sample)
+
+colnames(bdq_final_distmat) %in% bdq_res_samples$sample %>% table(.)
+
+rownames(bdq_final_distmat) %in% bdq_res_samples$sample %>% table(.)
+
+
+bdq_tree = phangorn::upgma(bdq_final_distmat)
+
+```
+
+
+
+
+```{r}
+
+bdq_plot = ggtree(bdq_tree, layout="fan", open.angle=15, colour = drug_cols[1]) %<+% 
+  lineages_gpi_plot + 
+  geom_tippoint(aes(color=plot_edited_lineages)) + 
+  labs(colour='')  +
+  scale_colour_manual(values = plot_colours$colour[2:5])
+
+
+
+bdq_ring = bdq_res_samples %>% select(sample, GENE, TO_PLOT)
+
+bdq_ring = bdq_ring %>%
+  mutate(GENE_PLOT = case_when(GENE == "atpE" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpL3" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpL5" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpS5" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "pepQ" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv0678" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv1816" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv3249c" & TO_PLOT == TRUE ~ GENE,
+                         TRUE ~ "NA")) %>% 
+  mutate(GENE_PLOT = replace(GENE_PLOT, GENE_PLOT == "NA", NA))
+
+bdq_plot_with_rings = bdq_plot +
+      new_scale_fill() + 
+      geom_fruit(
+          data=bdq_ring,
+          geom=geom_tile,
+          mapping=aes(y=sample, x=GENE_PLOT, fill=GENE_PLOT),
+          pwidth=0.5, 
+          axis.params=list(
+                          axis="x", 
+                          text.angle=-90, 
+                          text.size=3,
+                          hjust=0
+                      ),
+          show.legend=FALSE) +
+  scale_fill_manual(values = rep(drug_cols[1],8)) +
+  geom_label(aes( x = 0, y = 0, label = "BDQ"), fill="white", label.size=NA, size=7) +
+  theme(legend.position = "none")
+                         
+```
+
+
+
+
+
+```{r}
+cfz_submat = bigmat %>% select(cfz_res_samples$sample)
+cfz_submatT = as.data.frame(t(cfz_submat))
+
+cfz_submat_cols = colnames(cfz_submat)
+rownames(cfz_submatT) <- cfz_submat_cols
+colnames(cfz_submatT) <-colnames(bigmat)
+
+cfz_final_distmat = cfz_submatT %>% select(cfz_res_samples$sample)
+
+colnames(cfz_final_distmat) %in% cfz_res_samples$sample %>% table(.)
+
+rownames(cfz_final_distmat) %in% cfz_res_samples$sample %>% table(.)
+
+
+cfz_tree = phangorn::upgma(cfz_final_distmat)
+
+```
+
+
+```{r}
+cfz_plot = ggtree(cfz_tree, layout="fan", open.angle=15, colour = drug_cols[2]) %<+% 
+  lineages_gpi_plot + 
+  geom_tippoint(aes(color=plot_edited_lineages)) + 
+  labs(colour='') +
+  scale_colour_manual(values = plot_colours$colour[1:5])
+
+
+
+cfz_ring = cfz_res_samples %>% select(sample, GENE, TO_PLOT)
+
+
+cfz_ring = cfz_ring %>%
+  mutate(GENE_PLOT = case_when(GENE == "Rv1979c" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpL3" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpL5" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpS5" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "pepQ" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv0678" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv1816" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv3249c" & TO_PLOT == TRUE ~ GENE,
+                         TRUE ~ "NA")) %>% 
+  mutate(GENE_PLOT = replace(GENE_PLOT, GENE_PLOT == "NA", NA))
+
+
+cfz_plot_with_rings = cfz_plot +
+      new_scale_fill() + 
+      geom_fruit(
+          data=cfz_ring,
+          geom=geom_tile,
+          mapping=aes(y=sample, x=GENE_PLOT, fill=GENE_PLOT),
+          pwidth=0.5, 
+          axis.params=list(
+                          axis="x", 
+                          text.angle=-90, 
+                          text.size=3,
+                          hjust=0
+                      ),
+          show.legend=FALSE) +
+  scale_fill_manual(values = rep(drug_cols[2],8)) +
+  geom_label(aes( x = 0, y = 0, label = "CFZ"), fill="white", label.size=NA, size=7)
+
+cfz_plot_with_rings_no_legend = cfz_plot +
+      new_scale_fill() + 
+      geom_fruit(
+          data=cfz_ring,
+          geom=geom_tile,
+          mapping=aes(y=sample, x=GENE_PLOT, fill=GENE_PLOT),
+          pwidth=0.5, 
+          axis.params=list(
+                          axis="x", 
+                          text.angle=-90, 
+                          text.size=3,
+                          hjust=0
+                      ),
+          show.legend=FALSE) +
+  scale_fill_manual(values = rep(drug_cols[2],8)) +
+  geom_label(aes( x = 0, y = 0, label = "CFZ"), fill="white", label.size=NA, size=7) + 
+  theme(legend.position = "none")
+                         
+
+```
+
+
+
+
+
+```{r}
+dlm_submat = bigmat %>% select(dlm_res_samples$sample)
+dlm_submatT = as.data.frame(t(dlm_submat))
+
+dlm_submat_cols = colnames(dlm_submat)
+rownames(dlm_submatT) <- dlm_submat_cols
+colnames(dlm_submatT) <-colnames(bigmat)
+
+dlm_final_distmat = dlm_submatT %>% select(dlm_res_samples$sample)
+
+colnames(dlm_final_distmat) %in% dlm_res_samples$sample %>% table(.)
+
+rownames(dlm_final_distmat) %in% dlm_res_samples$sample %>% table(.)
+
+
+dlm_tree = phangorn::upgma(dlm_final_distmat)
+
+```
+
+
+```{r}
+dlm_plot = ggtree(dlm_tree, layout="fan", open.angle=15, colour = drug_cols[3]) %<+% 
+  lineages_gpi_plot + 
+  geom_tippoint(aes(color=plot_edited_lineages)) + 
+  labs(colour='') +
+  scale_colour_manual(values = plot_colours$colour[2:5])
+
+
+
+dlm_ring = dlm_res_samples %>% select(sample, GENE, TO_PLOT)
+
+
+
+dlm_ring = dlm_ring %>%
+  mutate(GENE_PLOT = case_when(GENE == "ddn" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "fbiA" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "fbiB" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "fbiC" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "fgd1" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "mmpL3" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv2983" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv3249c" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv1816" & TO_PLOT == TRUE ~ GENE,
+                         TRUE ~ "NA")) %>% 
+  mutate(GENE_PLOT = replace(GENE_PLOT, GENE_PLOT == "NA", NA))
+
+
+dlm_plot_with_rings = dlm_plot +
+      new_scale_fill() + 
+      geom_fruit(
+          data=dlm_ring,
+          geom=geom_tile,
+          mapping=aes(y=sample, x=GENE_PLOT, fill=GENE_PLOT),
+          pwidth=0.5, 
+          axis.params=list(
+                          axis="x", 
+                          text.angle=-90, 
+                          text.size=3,
+                          hjust=0
+                      ),
+          show.legend=FALSE) +
+  scale_fill_manual(values = rep(drug_cols[3],9)) +
+  geom_label(aes( x = 0, y = 0, label = "DLM"), fill="white", label.size=NA, size=7) +
+  theme(legend.position = "none")
+                         
+
+```
+
+
+
+
+
+
+```{r}
+lzd_submat = bigmat %>% select(lzd_res_samples$sample)
+lzd_submatT = as.data.frame(t(lzd_submat))
+
+lzd_submat_cols = colnames(lzd_submat)
+rownames(lzd_submatT) <- lzd_submat_cols
+colnames(lzd_submatT) <-colnames(bigmat)
+
+lzd_final_distmat = lzd_submatT %>% select(lzd_res_samples$sample)
+
+colnames(lzd_final_distmat) %in% lzd_res_samples$sample %>% table(.)
+
+rownames(lzd_final_distmat) %in% lzd_res_samples$sample %>% table(.)
+
+
+lzd_tree = phangorn::upgma(lzd_final_distmat)
+
+```
+
+
+```{r}
+
+
+lzd_plot = ggtree(lzd_tree, layout="fan", open.angle=15, colour = drug_cols[4]) %<+% 
+  lineages_gpi_plot + 
+  geom_tippoint(aes(color=plot_edited_lineages)) + 
+  labs(colour='') +
+  scale_colour_manual(values = plot_colours$colour[1:5])
+
+
+
+lzd_ring = lzd_res_samples %>% select(sample, GENE, TO_PLOT)
+
+lzd_ring = lzd_ring %>%
+  mutate(GENE_PLOT = case_when(GENE == "mmpL3" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "rplC" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "rrl" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv1816" & TO_PLOT == TRUE ~ GENE,
+                         GENE == "Rv3249c" & TO_PLOT == TRUE ~ GENE,
+                         TRUE ~ "NA")) %>% 
+  mutate(GENE_PLOT = replace(GENE_PLOT, GENE_PLOT == "NA", NA))
+
+
+
+lzd_plot_with_rings = lzd_plot +
+      new_scale_fill() + 
+      geom_fruit(
+          data=lzd_ring,
+          geom=geom_tile,
+          mapping=aes(y=sample, x=GENE_PLOT, fill=GENE_PLOT),
+          pwidth=0.4, 
+          axis.params=list(
+                          axis="x", 
+                          text.angle=-90, 
+                          text.size=4,
+                          hjust=0
+                      ),
+          show.legend=FALSE) +
+  scale_fill_manual(values = rep(drug_cols[4],9)) +
+  geom_label(aes( x = 0, y = 0, label = "LZD"), fill="white", label.size=NA, size=8) +
+  theme(legend.position = "none")
+                         
+
+```
+
+
+
+```{r}
+
+ggsave(country_barchart,
+       filename = paste0(OUT_DIR, "BDQ_CFZ_DLM_LZD_countries_barchart.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 5,
+       width = 7
+       )
+
+
+ggsave(bdq_plot_with_rings,
+       filename = paste0(OUT_DIR, "BDQ_tree.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 7.5,
+       width = 7.5
+       )
+
+ggsave(cfz_plot_with_rings,
+       filename = paste0(OUT_DIR, "CFZ_tree.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 7.5,
+       width = 7.5
+       )
+
+ggsave(cfz_plot_with_rings_no_legend,
+       filename = paste0(OUT_DIR, "CFZ_tree_no_legend.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 7.5,
+       width = 7.5
+       )
+
+ggsave(dlm_plot_with_rings,
+       filename = paste0(OUT_DIR, "DLM_tree.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 7.5,
+       width = 7.5
+       )
+
+
+ggsave(lzd_plot_with_rings,
+       filename = paste0(OUT_DIR, "LZD_tree.pdf"),
+       device="pdf",
+       limitsize = F,
+       height = 8.5,
+       width = 8.5
+       )
+```
