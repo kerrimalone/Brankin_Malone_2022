@@ -63,7 +63,7 @@ SUBJECTS = "SUBJECTS.csv.gz"
 CRyPTIC_TREE = "gpi_tree.out"
 
 # Lineages for the QC samples can be found at github.com/kerrimalone/Brankin_Malone_2022
-QC_LINEAGES = "/Users/kmalone/Google Drive/Other computers/My MacBook Pro (1)/gdrive/projects/linTB/out_comas/lineage_classification_QC.csv"
+QC_LINEAGES = "lineage_classification_QC.csv"
 
 GPI_METADATA = "GPI_LOOKUP.csv.gz"
 
