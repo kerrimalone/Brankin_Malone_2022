@@ -49,7 +49,7 @@ libs_load(c("BiocManager","cowplot","data.table","ggmap",
 
 
 ``` {r}
-#Add local path to downloaded data_tables from https://ftp.ebi.ac.uk/pub/databases/cryptic/reproducibility/data_tables/cryptic-analysis-group/
+#Add local path to downloaded data_tables from [https://ftp.ebi.ac.uk/pub/databases/cryptic/reproducibility/data_tables/cryptic-analysis-group/](http://ftp.ebi.ac.uk/pub/databases/cryptic/release_june2022/)
 ROOT_DIR = "/example_filepath/"
 
 #Set output directory
